@@ -1,0 +1,25 @@
+{
+  "name": "llama2.c-emscripten",
+  "version": "0.1.0",
+  "description": "Emscripten (JS) interface to Andrej Karpathy's llama2.c implementation",
+  "main": "llama2.js",
+  "scripts": {
+    "build": "webpack --config webpack.config.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gohai/llama2.c-emscripten.git"
+  },
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/gohai/llama2.c-emscripten/issues"
+  },
+  "homepage": "https://github.com/gohai/llama2.c-emscripten#readme",
+  "devDependencies": {
+    "webpack": "^5.88.2"
+  },
+  "dependencies": {
+    "webpack-cli": "^5.1.4"
+  }
+}

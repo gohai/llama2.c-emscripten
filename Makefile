@@ -45,6 +45,45 @@ rungnu:
 runompgnu:
 	$(CC) -Ofast -fopenmp -std=gnu11 run.c  -lm  -o run
 
+# includes model & tokenizer
+.PHONY: emscripten
+emscripten: run.c
+	emcc -O3 run.c \
+    -o web/src/llama2.js \
+    -s EXPORTED_FUNCTIONS='["_main", "_main_loop", "_malloc", "_free", "_register_callback", "_set_parameters", "_generate", "_manual_start", "_manual_next", "_get_vocab", "_get_vocab_size"]' \
+    -s EXPORTED_RUNTIME_METHODS='["ccall", "addFunction", "UTF8ToString"]' \
+    -s ALLOW_MEMORY_GROWTH=1 \
+    -s ALLOW_TABLE_GROWTH=1 \
+    -s MODULARIZE \
+    -s EXPORT_NAME='Llama2' \
+    --preload-file model.bin \
+    --preload-file tokenizer.bin
+
+# includes tokenizer only, model loaded from URL
+.PHONY: emscripten-small
+emscripten-small: run.c
+	emcc -O3 run.c \
+    -o web/src/llama2.js \
+    -s EXPORTED_FUNCTIONS='["_main", "_main_loop", "_malloc", "_free", "_register_callback", "_set_parameters", "_generate", "_manual_start", "_manual_next", "_get_vocab", "_get_vocab_size"]' \
+    -s EXPORTED_RUNTIME_METHODS='["ccall", "addFunction", "UTF8ToString"]' \
+    -s ALLOW_MEMORY_GROWTH=1 \
+    -s ALLOW_TABLE_GROWTH=1 \
+    -s MODULARIZE \
+    -s EXPORT_NAME='Llama2' \
+    --preload-file tokenizer.bin
+
+# model & tokenizer loaded from URL
+.PHONY: emscripten-min
+emscripten-min: run.c
+    emcc -O3 run.c \
+    -o web/src/llama2.js \
+    -s EXPORTED_FUNCTIONS='["_main", "_main_loop", "_malloc", "_free", "_register_callback", "_set_parameters", "_generate", "_manual_start", "_manual_next", "_get_vocab", "_get_vocab_size"]' \
+    -s EXPORTED_RUNTIME_METHODS='["ccall", "addFunction", "UTF8ToString"]' \
+    -s ALLOW_MEMORY_GROWTH=1 \
+    -s ALLOW_TABLE_GROWTH=1 \
+    -s MODULARIZE \
+    -s EXPORT_NAME='Llama2'
+
 .PHONY: clean
 clean:
 	rm -f run
