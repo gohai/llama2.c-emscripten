@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<title>llama2.c-emscripten example</title>
+	<script src="llama2.js"></script>
+</head>
+<body>
+	<input id="prompt" placeholder="Prompt"></input> <input type="button" id="generate" value="Generate"></input>
+	<div id="output"></div>
+
+	<script>
+		(async () => {
+
+			const llama2 = await new LLAMA2();
+
+			document.querySelector('#generate').addEventListener('click', async function() {
+				const prompt = document.querySelector('#prompt').value;
+
+				const options = {
+					temperature: 0.9,
+				};
+
+				const out = await llama2.generate(prompt);
+				document.querySelector('#output').innerHTML = out;
+			});
+
+			llama2.on('token', () => {
+				console.log('token', llama2.tokens[llama2.tokens.length-1]);
+			});
+
+			llama2.on('word', (word) => {
+				console.log('word', word);
+			});
+
+		})();
+	</script>
+</body>
+</html>

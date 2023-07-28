@@ -20,6 +20,10 @@ $ ./run
     #include <unistd.h>
     #include <sys/mman.h>
 #endif
+#if defined __EMSCRIPTEN__
+    #include <emscripten.h>
+#endif
+
 // ----------------------------------------------------------------------------
 // Transformer and RunState structs, and related memory management
 
@@ -511,14 +515,79 @@ void error_usage() {
     exit(EXIT_FAILURE);
 }
 
+
+float temperature = 1.0f; // 0.0 = greedy deterministic. 1.0 = original. don't set higher
+float topp = 0.9f;        // top-p in nucleus sampling
+int steps = 256;          // max number of steps to run for, 0: use seq_len
+Config config;
+TransformerWeights weights;
+char** vocab;
+float* vocab_scores;
+unsigned int max_token_length;
+RunState state;
+int *prompt_tokens = NULL;
+int num_prompt_tokens = 0;
+int next;                 // will store the next token in the sequence
+int token = 1;            // init with token 1 (=BOS), as done in Llama-2 sentencepiece tokenizer
+int pos = 0;              // position in the sequence
+
+
+void* on_token_callback = NULL;
+
+
+void main_loop(void * dummy) {
+#if defined __EMSCRIPTEN__
+    if (pos >= steps) {
+        emscripten_pause_main_loop();
+        return; // pointers might be invalid when this resumes
+    }
+#endif
+
+    // forward the transformer to get logits for the next token
+    transformer(token, pos, &config, &state, &weights);
+
+    // advance the state state machine
+    if(pos < num_prompt_tokens) {
+        // if we are still processing the input prompt, force the next prompt token
+        next = prompt_tokens[pos];
+    } else {
+        // sample the next token
+        if (temperature == 0.0f) {
+            // greedy argmax sampling: take the token with the highest probability
+            next = argmax(state.logits, config.vocab_size);
+        } else {
+            // apply the temperature to the logits
+            for (int q=0; q<config.vocab_size; q++) { state.logits[q] /= temperature; }
+            // apply softmax to the logits to get the probabilities for next token
+            softmax(state.logits, config.vocab_size);
+            // we sample from this distribution to get the next token
+            if (topp <= 0) {
+                // simply sample from the predicted probability distribution
+                next = sample(state.logits, config.vocab_size);
+            } else {
+                // top-p (nucleus) sampling, clamping the least likely tokens to zero
+                next = sample_topp(state.logits, config.vocab_size, topp, state.probindex);
+            }
+        }
+    }
+    pos++;
+
+    if (on_token_callback) {
+        ((void (*)(char*, int, float, int))on_token_callback)(vocab[next], next, state.logits[next], (pos+1 >= steps));
+    }
+
+    // following BOS (1) token, sentencepiece decoder strips any leading whitespace (see PR #89)
+    char *token_str = (token == 1 && vocab[next][0] == ' ') ? vocab[next]+1 : vocab[next];
+    printf("%s", token_str);
+    fflush(stdout);
+    token = next;
+}
+
 int main(int argc, char *argv[]) {
 
     // default inits
     char *checkpoint = NULL;  // e.g. out/model.bin
-    float temperature = 1.0f; // 0.0 = greedy deterministic. 1.0 = original. don't set higher
-    float topp = 0.9f;        // top-p in nucleus sampling
     rng_seed = (unsigned int)time(NULL); // seed rng with time by default
-    int steps = 256;          // number of steps to run for
     char *prompt = NULL;      // prompt string
 
     // poor man's C argparse so we can override the defaults above from the command line
@@ -539,8 +608,6 @@ int main(int argc, char *argv[]) {
     if(rng_seed == 0) { fprintf(stderr, "Cannot use seed=0 because of the rng alg used\n"); return 1; }
 
     // read in the model.bin file
-    Config config;
-    TransformerWeights weights;
     int fd = 0;         // file descriptor for memory mapping
     float* data = NULL; // memory mapped data pointer
     ssize_t file_size;     // size of the checkpoint file in bytes
@@ -568,9 +635,8 @@ int main(int argc, char *argv[]) {
     if (steps <= 0 || steps > config.seq_len) { steps = config.seq_len; }
 
     // read in the tokenizer.bin file
-    char** vocab = (char**)malloc(config.vocab_size * sizeof(char*));
-    float* vocab_scores = (float*)malloc(config.vocab_size * sizeof(float));
-    unsigned int max_token_length;
+    vocab = (char**)malloc(config.vocab_size * sizeof(char*));
+    vocab_scores = (float*)malloc(config.vocab_size * sizeof(float));
     {
         FILE *file = fopen("tokenizer.bin", "rb");
         if (!file) { fprintf(stderr, "couldn't load tokenizer.bin\n"); return 1; }
@@ -587,12 +653,9 @@ int main(int argc, char *argv[]) {
     }
 
     // create and init the application RunState
-    RunState state;
     malloc_run_state(&state, &config);
 
     // process the prompt, if any
-    int *prompt_tokens = NULL;
-    int num_prompt_tokens = 0;
     if (prompt != NULL) {
         prompt_tokens = (int*)malloc(strlen(prompt) * sizeof(int));
         bpe_encode(prompt, vocab, vocab_scores, config.vocab_size, max_token_length, prompt_tokens, &num_prompt_tokens);
@@ -600,53 +663,17 @@ int main(int argc, char *argv[]) {
 
     // start the main loop
     long start = 0;  // used to time our code, only initialized after first iteration
-    int next;        // will store the next token in the sequence
-    int token = 1;   // init with token 1 (=BOS), as done in Llama-2 sentencepiece tokenizer
-    int pos = 0;     // position in the sequence
-    while (pos < steps) {
 
-        // forward the transformer to get logits for the next token
-        transformer(token, pos, &config, &state, &weights);
-
-        // advance the state state machine
-        if(pos < num_prompt_tokens) {
-            // if we are still processing the input prompt, force the next prompt token
-            next = prompt_tokens[pos];
-        } else {
-            // sample the next token
-            if (temperature == 0.0f) {
-                // greedy argmax sampling: take the token with the highest probability
-                next = argmax(state.logits, config.vocab_size);
-            } else {
-                // apply the temperature to the logits
-                for (int q=0; q<config.vocab_size; q++) { state.logits[q] /= temperature; }
-                // apply softmax to the logits to get the probabilities for next token
-                softmax(state.logits, config.vocab_size);
-                // we sample from this distribution to get the next token
-                if (topp <= 0) {
-                    // simply sample from the predicted probability distribution
-                    next = sample(state.logits, config.vocab_size);
-                } else {
-                    // top-p (nucleus) sampling, clamping the least likely tokens to zero
-                    next = sample_topp(state.logits, config.vocab_size, topp, state.probindex);
-                }
-            }
-        }
-        pos++;
-
-        // data-dependent terminating condition: the BOS (1) token delimits sequences
-        if (next == 1) { break; }
-
-        // following BOS (1) token, sentencepiece decoder strips any leading whitespace (see PR #89)
-        char *token_str = (token == 1 && vocab[next][0] == ' ') ? vocab[next]+1 : vocab[next];
-        printf("%s", token_str);
-        fflush(stdout);
-        token = next;
-
-        // init the timer here because the first iteration can be slower
+#if defined __EMSCRIPTEN__
+    pos = steps; // to make the loop pause initially
+    emscripten_set_main_loop_arg(main_loop, NULL, 0, 1);
+#else
+    while (pos < steps && next != 1) {
+        main_loop(NULL);
         if (start == 0) { start = time_in_ms(); }
     }
     printf("\n");
+#endif
 
     // report achieved tok/s (pos-1 because the timer starts after first iteration)
     if (pos > 1) {
@@ -664,3 +691,106 @@ int main(int argc, char *argv[]) {
     if (fd != -1) close(fd);
     return 0;
 }
+
+
+#if defined __EMSCRIPTEN__
+
+void register_callback(void* _on_token_callback) {
+    on_token_callback = _on_token_callback;
+}
+
+void set_parameters(float _temperature, float _topp, int _steps) {
+    temperature = _temperature;
+    topp = _topp;
+    if (_steps <= 0 || _steps > config.seq_len) {
+        steps = config.seq_len;
+    } else {
+        steps = _steps;
+    }
+}
+
+void generate(char* prompt) {
+    // reset state
+    free_run_state(&state);
+    if (prompt_tokens != NULL) {
+        free(prompt_tokens);
+        prompt_tokens = NULL;
+    }
+    malloc_run_state(&state, &config);
+
+    // process prompt
+    if (prompt != NULL) {
+        prompt_tokens = (int*)malloc(config.seq_len * sizeof(int));
+        bpe_encode(prompt, vocab, vocab_scores, config.vocab_size, max_token_length, prompt_tokens, &num_prompt_tokens);
+    }
+
+    token = 1;
+    pos = 0;
+
+    // (re-) start the main loop for generation
+    emscripten_resume_main_loop();
+}
+
+//
+// Besides generate(), which will use the main loop to invoke a
+// callback function for every token, the manual_ functions below
+// let the caller pick the next token synchronously. You'd want
+// to use one or the other.
+//
+
+char** get_vocab() {
+    return vocab;
+}
+
+int get_vocab_size() {
+    return config.vocab_size;
+}
+
+int manual_start(char* prompt) {
+    // stop the main loop of any prior generate()
+    // the manual_ functions aren't using it
+    emscripten_pause_main_loop();
+
+    // reset state
+    free_run_state(&state);
+    if (prompt_tokens != NULL) {
+        free(prompt_tokens);
+    }
+    malloc_run_state(&state, &config);
+
+    // process prompt
+    if (prompt != NULL) {
+        prompt_tokens = (int*)malloc(config.seq_len * sizeof(int));
+        bpe_encode(prompt, vocab, vocab_scores, config.vocab_size, max_token_length, prompt_tokens, &num_prompt_tokens);
+    }
+
+    token = 1;
+    pos = 0;
+
+    // run the transformer over the prompt
+    while (pos < num_prompt_tokens) {
+        transformer(token, pos, &config, &state, &weights);
+        token = prompt_tokens[pos];
+        pos++;
+    }
+
+    return token; // return the first token to pass to _next()
+}
+
+float* manual_next(int _token) {
+    token = _token;
+
+    transformer(token, pos, &config, &state, &weights);
+
+    if (temperature != 0.0f) {
+        for (int q=0; q<config.vocab_size; q++) { state.logits[q] /= temperature; }
+        softmax(state.logits, config.vocab_size);
+    }
+
+    token = 0;
+    pos++;
+
+    return state.logits;
+}
+
+#endif

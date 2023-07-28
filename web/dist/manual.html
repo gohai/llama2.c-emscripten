@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<title>llama2.c-emscripten example</title>
+	<script src="llama2.js"></script>
+</head>
+<body>
+	<input id="prompt" placeholder="Prompt"></input> <input type="button" id="generate" value="Generate"></input>
+
+	<script>
+		(async () => {
+
+			const llama2 = await new LLAMA2();
+
+			document.querySelector('#generate').addEventListener('click', async function() {
+				const prompt = document.querySelector('#prompt').value;
+
+				// UI
+				document.querySelector('#generate').remove();
+				document.querySelector('#prompt').remove();
+				const btn = document.createElement('button');
+				btn.innerHTML = prompt;
+				btn.disabled = true;
+				document.body.appendChild(btn);
+
+				const options = {
+					temperature: 0.9,
+				};
+				// this will emit a "tokens" event, handled below
+				llama2.manualStart(prompt);
+
+			});
+
+			llama2.on('tokens', async function(tokens) {
+				// UI
+				for (let i=0; i < 40; i++) {
+					const btn = document.createElement('button');
+					btn.innerHTML = tokens[i].str;
+					btn.id = tokens[i].index;
+					btn.className = 'continuation';
+					btn.addEventListener('click', onButtonClick);
+					document.body.appendChild(btn);
+				}
+			});
+
+			const onButtonClick = async function() {
+				const nextToken = parseInt(this.id);
+
+				// UI
+				this.className = '';
+				this.disabled = true;
+				document.querySelectorAll('.continuation').forEach(e => e.remove());
+
+				// this will emit a "tokens" event, handled above
+				llama2.manualNext(nextToken);
+			};
+
+		})();
+	</script>
+</body>
+</html>
