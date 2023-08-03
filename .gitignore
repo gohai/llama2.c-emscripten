@@ -1,0 +1,7 @@
+**/.DS_Store
+model.bin
+out
+web/dist/llama2.*
+web/node_modules
+web/package-lock.json
+web/src/llama2.*
